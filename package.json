@@ -1,0 +1,11 @@
+{
+  "name": "inserver-stealer",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5"
+  }
+}
